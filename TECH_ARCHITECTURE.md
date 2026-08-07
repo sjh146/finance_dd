@@ -66,21 +66,25 @@ Notification    id, member_id, kind(마감/신고/납부/이상), channel, sent_
 ## 3. 시스템 아키텍처 (3-tier + 외부 어댑터 + 비동기 워커)
 
 ```
-[Web Frontend Next.js PWA]
-        | REST + OpenAPI / WebSocket(알림)
+[AI Agent (Hermes 등)]  ← MCP 클라이언트
+        | MCP (stdio)
+[MCP Server (@aggelog/mcp)]  ← 도구: 거래·분류·예측·체크리스트·OCR·동기화
+        | NestJS 도메인 서비스 직접 호출 (in-process) 또는 REST
 [API Gateway/BFF (NestJS)]
    |- 계정·사업 (회원, 사업체, 동의서)
    |- Transaction 커넥터 (오픈뱅킹·마이데이터·카드)
    |- OCR 파이프라인
    |- Classification · ML (추론 서비스, SageMaker)
    |- Tax Forecasting / Filing(초안)
-   `- Notification (웹푸시·이메일)
+   `- Notification (웹훅·이벤트)
          | 외부 어댑터: 마이데이터(본인신용정보관리업자), 은행계열 API 제휴(카카오뱅크 등), 금융결제원(오픈뱅킹, 별도 트랙), 홈택스(조회용), PG(카드사/PG 정산 대조)
          `- Worker(BullMQ(Redis)) 파이프라인
             * ingest(연동 수집) -> ocr(영수증) -> classify -> predict -> notify
 ```
 
-- **3-tier**: Presentation(Frontend) / Application(BFF·API·워커) / Data(DB·Object storage).
+- **사용자 모델 (v2.1)**: 사람용 웹 대시보드를 제거하고, **AI 에이전트(Hermes 등)가 MCP 서버를 통해 직접 소비**하는 headless 서비스로 전환. `[Web Frontend]` 계층은 삭제되고 **MCP Server** 계층이 프레젠테이션 역할을 대체한다.
+- **MCP Server**: MCP TypeScript SDK 기반 stdio 서버. NestJS 도메인 서비스(분류·예측·체크리스트·OCR·어댑터)를 직접 호출하며, 아래 도구를 노출한다: `list_transactions`·`classify_transaction`·`predict_tax`·`get_closing_checklist`·`process_receipt`·`sync_accounts`·`get_ledger`·`list_businesses`. (도구 목록은 구현 시 확정)
+- **3-tier**: Application(BFF·API·워커·MCP) / Data(DB·Object storage). Presentation 계층은 MCP 도구로 대체.
 - **외부 어댑터**는 별도 인터페이스(`MyDataAdapter`, `BankApiAdapter`, `OpenBankingAdapter`, `HometaxAdapter`, `PGExtractor`)로 추출하여 **실패·속도 차이를 격리**. 각 어댑터는 배치·호출 제한·캐시를 고려.
 - **연동 전략 (P0-1)**: 직접 금융결제원 오픈뱅킹 이용기관 등록은 심사·자본금·보안 요건으로 **수개월~1년 소요**되므로, MVP는 **마이데이터 어댑터 + 은행계열 API 제휴 어댑터**를 1차 경로로 하고, 직접 오픈뱅킹 등록은 별도 트랙으로 편성한다. `Consent` 엔터티의 `type`에 **'mydata' 채널을 강조**한다.
 - **PGExtractor (P2-6)**: '거래 무결성 검증'이 아닌 **'카드사/PG 정산 대조'** 기능으로 명확화한다. MVP에서는 정산 대조를 후순위로 두고, MVP 제외로 표시한다.

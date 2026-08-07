@@ -3,11 +3,10 @@
 # smoke-test.sh — 아끼로그 (AggeLog) MVP 스모크 테스트
 #
 # 검증 항목:
-#   1. 루트 빌드 (apps/api + apps/web + packages/contracts + apps/mcp)
+#   1. 루트 빌드 (apps/api + packages/contracts + apps/mcp)
 #   2. API 유닛 테스트 (jest)
 #   3. API 서버 기동 → GET /health, GET /api/domain/health 응답 확인
-#   4. 웹 앱 빌드 (Next.js production build)
-#   5. MCP 서버 부팅 확인 (stdio initialize 핸드셰이크)
+#   4. MCP 서버 부팅 확인 (stdio initialize 핸드셰이크)
 #
 # 사용법: bash scripts/smoke-test.sh   (또는 npm run smoke)
 #
@@ -59,19 +58,19 @@ run_check() {
 # ---------------------------------------------------------------------------
 # 1. 루트 빌드
 # ---------------------------------------------------------------------------
-log "1/5 루트 빌드 (api + web + contracts + mcp)"
+log "1/4 루트 빌드 (api + contracts + mcp)"
 run_check "루트 빌드 (npm run build)" bash -c "cd '$ROOT_DIR' && npm run build"
 
 # ---------------------------------------------------------------------------
 # 2. API 유닛 테스트
 # ---------------------------------------------------------------------------
-log "2/5 API 유닛 테스트"
+log "2/4 API 유닛 테스트"
 run_check "API 유닛 테스트 (jest)" bash -c "cd '$ROOT_DIR' && npm test --workspace apps/api"
 
 # ---------------------------------------------------------------------------
 # 3. API 서버 기동 + 엔드포인트 확인
 # ---------------------------------------------------------------------------
-log "3/5 API 서버 기동 + 엔드포인트 확인"
+log "3/4 API 서버 기동 + 엔드포인트 확인"
 
 API_PID=""
 cleanup() {
@@ -160,15 +159,9 @@ cleanup
 API_PID=""
 
 # ---------------------------------------------------------------------------
-# 4. 웹 앱 빌드
+# 4. MCP 서버 부팅 확인 (stdio initialize 핸드셰이크)
 # ---------------------------------------------------------------------------
-log "4/5 웹 앱 빌드 (Next.js production build)"
-run_check "웹 앱 빌드 (npm run build:web)" bash -c "cd '$ROOT_DIR' && npm run build:web"
-
-# ---------------------------------------------------------------------------
-# 5. MCP 서버 부팅 확인 (stdio initialize 핸드셰이크)
-# ---------------------------------------------------------------------------
-log "5/5 MCP 서버 부팅 확인 (stdio initialize)"
+log "4/4 MCP 서버 부팅 확인 (stdio initialize)"
 
 MCP_DIR="$ROOT_DIR/apps/mcp"
 MCP_PID=""
