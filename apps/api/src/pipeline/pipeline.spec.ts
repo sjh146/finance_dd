@@ -1,7 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getQueueToken } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
+import { ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { PipelineController } from './pipeline.controller';
 import { IngestProcessor, IngestJobData } from './ingest.processor';
 import { OcrProcessor, OcrJobData } from './ocr.processor';
 import { ClassifyProcessor, ClassifyJobData } from './classify.processor';
@@ -64,6 +66,7 @@ function mockPrisma() {
     ledger: {
       findFirst: jest.fn(),
       findMany: jest.fn(),
+      findUnique: jest.fn(),
     },
     notification: {
       findFirst: jest.fn(),
@@ -557,5 +560,81 @@ describe('PipelineOrchestratorService', () => {
       period: '2026-Q1',
       dueDate: '2026-04-25T00:00:00.000Z',
     });
+  });
+});
+
+describe('PipelineController', () => {
+  let controller: PipelineController;
+  let prisma: ReturnType<typeof mockPrisma>;
+  let orchestrator: PipelineOrchestratorService;
+
+  beforeEach(async () => {
+    prisma = mockPrisma();
+    prisma.business.findUnique.mockResolvedValue({
+      id: 'biz-1',
+      memberId: 'member-1',
+    });
+    prisma.ledger.findUnique.mockResolvedValue({
+      id: 'ledger-1',
+      businessId: 'biz-1',
+    });
+
+    const module: TestingModule = await Test.createTestingModule({
+      controllers: [PipelineController],
+      providers: [
+        { provide: getQueueToken(QUEUE_INGEST), useValue: mockQueue() },
+        { provide: getQueueToken(QUEUE_OCR), useValue: mockQueue() },
+        { provide: getQueueToken(QUEUE_CLASSIFY), useValue: mockQueue() },
+        { provide: getQueueToken(QUEUE_PREDICT), useValue: mockQueue() },
+        { provide: getQueueToken(QUEUE_NOTIFY), useValue: mockQueue() },
+        { provide: PrismaService, useValue: prisma },
+        {
+          provide: PipelineOrchestratorService,
+          useValue: {
+            syncAndProcess: jest.fn().mockResolvedValue({
+              ingestJobId: 'job-1',
+              queues: [QUEUE_INGEST],
+            }),
+          },
+        },
+      ],
+    }).compile();
+    controller = module.get(PipelineController);
+    orchestrator = module.get(PipelineOrchestratorService);
+  });
+
+  const baseBody = {
+    businessId: 'biz-1',
+    ledgerId: 'ledger-1',
+    period: '2026-Q1',
+    consent: { id: 'c1', type: 'mydata', scope: 's', status: 'ACTIVE' },
+  };
+
+  it('accepts a ledger owned by the business', async () => {
+    await expect(
+      controller.run(baseBody, 'member-1'),
+    ).resolves.toEqual({ ingestJobId: 'job-1', queues: [QUEUE_INGEST] });
+    expect(orchestrator.syncAndProcess).toHaveBeenCalledWith(
+      expect.objectContaining({ businessId: 'biz-1', ledgerId: 'ledger-1' }),
+    );
+  });
+
+  it('rejects a ledgerId belonging to a different business (403)', async () => {
+    prisma.ledger.findUnique.mockResolvedValue({
+      id: 'ledger-other',
+      businessId: 'biz-other',
+    });
+    await expect(
+      controller.run({ ...baseBody, ledgerId: 'ledger-other' }, 'member-1'),
+    ).rejects.toThrow(ForbiddenException);
+    expect(orchestrator.syncAndProcess).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-existent ledgerId (403)', async () => {
+    prisma.ledger.findUnique.mockResolvedValue(null);
+    await expect(
+      controller.run({ ...baseBody, ledgerId: 'missing-ledger' }, 'member-1'),
+    ).rejects.toThrow(ForbiddenException);
+    expect(orchestrator.syncAndProcess).not.toHaveBeenCalled();
   });
 });

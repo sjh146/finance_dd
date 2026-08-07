@@ -68,6 +68,8 @@ export class PipelineController {
   ): Promise<PipelineRunResult> {
     // 소유권 검증: businessId가 인증된 회원 소유인지 확인 (아니면 403).
     await this.assertBusinessOwnership(authMemberId, body.businessId);
+    // 소유권 검증: ledgerId가 해당 business 소속인지 확인 (아니면 403).
+    await this.assertLedgerOwnership(body.businessId, body.ledgerId);
 
     const req: PipelineRunRequest = {
       businessId: body.businessId,
@@ -114,6 +116,24 @@ export class PipelineController {
     if (!business || business.memberId !== authMemberId) {
       throw new ForbiddenException(
         'You do not have access to this business.',
+      );
+    }
+  }
+
+  /**
+   * ledgerId가 해당 business 소속인지 확인한다. 아니면 403을 던진다.
+   */
+  private async assertLedgerOwnership(
+    businessId: string,
+    ledgerId: string,
+  ): Promise<void> {
+    const ledger = await this.prisma.ledger.findUnique({
+      where: { id: ledgerId },
+      select: { businessId: true },
+    });
+    if (!ledger || ledger.businessId !== businessId) {
+      throw new ForbiddenException(
+        'You do not have access to this ledger.',
       );
     }
   }

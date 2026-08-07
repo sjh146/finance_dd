@@ -36,22 +36,14 @@ function loadDatabaseUrlFromEnvExample(): void {
 }
 
 /**
- * .env.example에서 MCP_API_KEY를 주입한다 (실제 .env는 읽지 않음).
- * 이미 process.env에 MCP_API_KEY가 있으면 그대로 사용한다.
+ * MCP_API_KEY가 환경변수에 설정되어 있는지 확인한다.
+ * 없으면 하드코딩/기본값으로 폴백하지 않고 명확한 에러로 시작을 거부한다.
  */
-function loadMcpApiKeyFromEnvExample(): void {
-  if (process.env['MCP_API_KEY']) {
-    return;
-  }
-  const envExamplePath = resolve(__dirname, '../../../.env.example');
-  try {
-    const content = readFileSync(envExamplePath, 'utf8');
-    const match = /^MCP_API_KEY=(.+)$/m.exec(content);
-    if (match) {
-      process.env['MCP_API_KEY'] = match[1].trim();
-    }
-  } catch {
-    // MCP_API_KEY가 없으면 인증되지 않은 컨텍스트로 동작 (도구는 401).
+export function assertMcpApiKeyConfigured(): void {
+  if (!process.env['MCP_API_KEY']) {
+    throw new Error(
+      'MCP_API_KEY is not set. Set MCP_API_KEY in the environment before starting the MCP server.',
+    );
   }
 }
 
@@ -64,7 +56,7 @@ function loadMcpApiKeyFromEnvExample(): void {
  */
 async function bootstrap(): Promise<void> {
   loadDatabaseUrlFromEnvExample();
-  loadMcpApiKeyFromEnvExample();
+  assertMcpApiKeyConfigured();
 
   const app = await NestFactory.createApplicationContext(McpServerModule, {
     logger: ['error', 'warn'],
@@ -74,7 +66,9 @@ async function bootstrap(): Promise<void> {
   await mcp.run();
 }
 
-bootstrap().catch((e) => {
-  console.error('[mcp] MCP 서버 부팅 실패:', e);
-  process.exit(1);
-});
+if (require.main === module) {
+  bootstrap().catch((e) => {
+    console.error('[mcp] MCP 서버 부팅 실패:', e);
+    process.exit(1);
+  });
+}
