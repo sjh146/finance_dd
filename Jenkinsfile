@@ -15,6 +15,8 @@ pipeline {
         stage('Install') {
             steps {
                 sh 'npm ci'
+                // Prisma 7: 클라이언트는 postinstall에 자동 생성되지 않음 — 명시적 generate 필요
+                sh 'npx prisma generate'
             }
         }
         stage('Build') {
