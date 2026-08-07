@@ -3,10 +3,11 @@
 # smoke-test.sh — 아끼로그 (AggeLog) MVP 스모크 테스트
 #
 # 검증 항목:
-#   1. 루트 빌드 (apps/api + apps/web + packages/contracts)
+#   1. 루트 빌드 (apps/api + apps/web + packages/contracts + apps/mcp)
 #   2. API 유닛 테스트 (jest)
 #   3. API 서버 기동 → GET /health, GET /api/domain/health 응답 확인
 #   4. 웹 앱 빌드 (Next.js production build)
+#   5. MCP 서버 부팅 확인 (stdio initialize 핸드셰이크)
 #
 # 사용법: bash scripts/smoke-test.sh   (또는 npm run smoke)
 #
@@ -58,19 +59,19 @@ run_check() {
 # ---------------------------------------------------------------------------
 # 1. 루트 빌드
 # ---------------------------------------------------------------------------
-log "1/4 루트 빌드 (api + web + contracts)"
+log "1/5 루트 빌드 (api + web + contracts + mcp)"
 run_check "루트 빌드 (npm run build)" bash -c "cd '$ROOT_DIR' && npm run build"
 
 # ---------------------------------------------------------------------------
 # 2. API 유닛 테스트
 # ---------------------------------------------------------------------------
-log "2/4 API 유닛 테스트"
+log "2/5 API 유닛 테스트"
 run_check "API 유닛 테스트 (jest)" bash -c "cd '$ROOT_DIR' && npm test --workspace apps/api"
 
 # ---------------------------------------------------------------------------
 # 3. API 서버 기동 + 엔드포인트 확인
 # ---------------------------------------------------------------------------
-log "3/4 API 서버 기동 + 엔드포인트 확인"
+log "3/5 API 서버 기동 + 엔드포인트 확인"
 
 API_PID=""
 cleanup() {
@@ -161,8 +162,67 @@ API_PID=""
 # ---------------------------------------------------------------------------
 # 4. 웹 앱 빌드
 # ---------------------------------------------------------------------------
-log "4/4 웹 앱 빌드 (Next.js production build)"
+log "4/5 웹 앱 빌드 (Next.js production build)"
 run_check "웹 앱 빌드 (npm run build:web)" bash -c "cd '$ROOT_DIR' && npm run build:web"
+
+# ---------------------------------------------------------------------------
+# 5. MCP 서버 부팅 확인 (stdio initialize 핸드셰이크)
+# ---------------------------------------------------------------------------
+log "5/5 MCP 서버 부팅 확인 (stdio initialize)"
+
+MCP_DIR="$ROOT_DIR/apps/mcp"
+MCP_PID=""
+MCP_FIFO="/tmp/smoke_mcp_in_$$"
+MCP_LOG="/tmp/smoke_mcp_$$.log"
+mcp_cleanup() {
+  if [ -n "$MCP_PID" ] && kill -0 "$MCP_PID" 2>/dev/null; then
+    kill "$MCP_PID" 2>/dev/null
+    wait "$MCP_PID" 2>/dev/null
+  fi
+  rm -f "$MCP_FIFO" "$MCP_LOG"
+}
+trap 'mcp_cleanup' EXIT
+
+# stdio 서버이므로 FIFO를 stdin으로 연결해 initialize JSON-RPC를 보낸다.
+mkfifo "$MCP_FIFO"
+(
+  cd "$MCP_DIR"
+  exec env DATABASE_URL="$DATABASE_URL" node dist/main.js <"$MCP_FIFO"
+) >"$MCP_LOG" 2>&1 &
+MCP_PID=$!
+
+# FIFO를 쓰기용으로 열어 서버가 stdin을 읽을 수 있게 한다.
+exec 3>"$MCP_FIFO"
+
+# initialize 요청 (MCP 프로토콜 핸드셰이크)
+INIT_MSG='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-test","version":"1.0.0"}}}'
+printf '%s\n' "$INIT_MSG" >&3
+
+# 서버 부팅 대기 (최대 20초, 0.5초 간격 재시도) — 응답이 로그에 기록되면 준비 완료.
+MCP_READY=0
+for _ in $(seq 1 40); do
+  if ! kill -0 "$MCP_PID" 2>/dev/null; then
+    break
+  fi
+  if grep -q '"serverInfo"' "$MCP_LOG" 2>/dev/null; then
+    MCP_READY=1
+    break
+  fi
+  sleep 0.5
+done
+
+if [ "$MCP_READY" -eq 1 ]; then
+  ok "MCP 서버 부팅 + initialize 핸드셰이크 (stdio)"
+else
+  fail "MCP 서버 부팅 (stdio initialize)"
+  echo "      └─ MCP 서버 로그 (마지막 20줄):"
+  tail -20 "$MCP_LOG" | sed 's/^/         /'
+fi
+
+# MCP 서버 종료
+exec 3>&-
+mcp_cleanup
+MCP_PID=""
 
 # ---------------------------------------------------------------------------
 # 요약
