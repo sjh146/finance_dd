@@ -2,7 +2,9 @@ pipeline {
     agent any
 
     environment {
-        DATABASE_URL = 'postgresql://aggelog:@aggelog-postgres:5432/aggelog?schema=public'
+        // DB 자격증명은 Jenkins 크레덴셜(secret text 'aggelog-db-url')에서 주입
+        // 설정: Jenkins → Manage Jenkins → Credentials → Add → Secret text
+        DATABASE_URL = credentials('aggelog-db-url')
         REDIS_URL = 'redis://aggelog-redis:6379'
     }
 
