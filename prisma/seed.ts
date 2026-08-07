@@ -22,13 +22,16 @@ const prisma = new PrismaClient({ adapter });
 
 async function main() {
   // --- Member (unique: oidcSub) ---
+  // apiKey: MVP API 키 인증용. 시드 회원은 결정적 키를 부여해 스모크 테스트가
+  // X-API-Key 헤더로 인증할 수 있게 한다. (실제 운영에서는 랜덤 생성)
   const member = await prisma.member.upsert({
     where: { oidcSub: 'seed-oidc-sub-0001' },
-    update: {},
+    update: { apiKey: '' },
     create: {
       oidcSub: 'seed-oidc-sub-0001',
       name: '김아끼',
       contact: 'kim@example.com',
+      apiKey: '',
     },
   });
 

@@ -34,6 +34,13 @@ if [ -z "$DATABASE_URL" ]; then
   exit 1
 fi
 
+# .env.example에서 API 키 추출 (실제 .env는 읽지 않음). 환경변수가 이미 있으면 우선 사용.
+# 시드 회원의 apiKey와 일치해야 한다 (prisma/seed.ts: ).
+API_KEY="${API_KEY:-$(grep -E '^MCP_API_KEY=' "$ROOT_DIR/.env.example" | head -1 | cut -d= -f2-)}"
+if [ -z "$API_KEY" ]; then
+  API_KEY=""
+fi
+
 PASS_COUNT=0
 FAIL_COUNT=0
 
@@ -172,9 +179,10 @@ else
     CONSENT_STATUS="$(echo "$PIPELINE_IDS" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
 
     if [ -n "$BIZ_ID" ] && [ -n "$LEDGER_ID" ]; then
-      # POST /api/pipeline/run — 전체 파이프라인 트리거
+      # POST /api/pipeline/run — 전체 파이프라인 트리거 (API 키 인증 헤더 포함)
       RUN_BODY="$(curl -sf -X POST "http://localhost:$SMOKE_PORT/api/pipeline/run" \
         -H 'Content-Type: application/json' \
+        -H "X-API-Key: $API_KEY" \
         -d "{\"businessId\":\"$BIZ_ID\",\"ledgerId\":\"$LEDGER_ID\",\"period\":\"2026-Q1\",\"consent\":{\"id\":\"seed-consent\",\"type\":\"$CONSENT_TYPE\",\"scope\":\"$CONSENT_SCOPE\",\"status\":\"$CONSENT_STATUS\"}}" 2>/dev/null)"
       if [ -n "$RUN_BODY" ] && echo "$RUN_BODY" | grep -q '"ingestJobId"'; then
         ok "POST /api/pipeline/run → ingest job 등록"
@@ -184,7 +192,8 @@ else
 
       # GET /api/pipeline/status — 큐 상태 확인 (워커가 처리할 시간을 준다)
       sleep 2
-      STATUS_BODY="$(curl -sf "http://localhost:$SMOKE_PORT/api/pipeline/status" 2>/dev/null)"
+      STATUS_BODY="$(curl -sf "http://localhost:$SMOKE_PORT/api/pipeline/status" \
+        -H "X-API-Key: $API_KEY" 2>/dev/null)"
       if [ -n "$STATUS_BODY" ] && echo "$STATUS_BODY" | grep -q '"status":"ok"'; then
         ok "GET /api/pipeline/status → 응답 수신"
         for Q in ingest-queue ocr-queue classify-queue predict-queue notify-queue; do
@@ -229,7 +238,7 @@ trap 'mcp_cleanup' EXIT
 mkfifo "$MCP_FIFO"
 (
   cd "$MCP_DIR"
-  exec env DATABASE_URL="$DATABASE_URL" node dist/main.js <"$MCP_FIFO"
+  exec env DATABASE_URL="$DATABASE_URL" MCP_API_KEY="$API_KEY" node dist/main.js <"$MCP_FIFO"
 ) >"$MCP_LOG" 2>&1 &
 MCP_PID=$!
 

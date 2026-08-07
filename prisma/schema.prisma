@@ -122,6 +122,7 @@ model Member {
   oidcSub   String   @unique @map("oidc_sub") // 외부 인증 ID (OIDC subject)
   name      String
   contact   String?
+  apiKey    String?  @unique @map("api_key") // API 키 인증 (MVP, X-API-Key 헤더)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

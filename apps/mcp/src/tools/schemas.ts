@@ -9,8 +9,8 @@ import { z } from 'zod';
 
 /** 사업체 목록 조회 */
 export const ListBusinessesSchema = z.object({
-  /** 회원 ID (선택). 지정 시 해당 회원의 사업체만 반환. */
-  memberId: z.string().optional().describe('회원 ID (선택)'),
+  /** 회원 ID (필수). 해당 회원의 사업체만 반환. */
+  memberId: z.string().optional().describe('회원 ID (필수)'),
 });
 
 /** 장부 조회 */

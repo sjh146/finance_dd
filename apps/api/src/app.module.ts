@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
@@ -10,6 +11,8 @@ import { ClosingModule } from './closing/closing.module';
 import { LlmModule } from './llm/llm.module';
 import { PipelineModule } from './pipeline/pipeline.module';
 import { DomainHealthController } from './domain-health.controller';
+import { AuthModule } from './auth/auth.module';
+import { ApiKeyGuard } from './auth/api-key.guard';
 
 @Module({
   imports: [
@@ -21,8 +24,13 @@ import { DomainHealthController } from './domain-health.controller';
     ClosingModule,
     LlmModule,
     PipelineModule,
+    AuthModule,
   ],
   controllers: [AppController, DomainHealthController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    // 전역 API 키 인증 가드 (공개 엔드포인트 /health, /api/domain/health 제외).
+    { provide: APP_GUARD, useClass: ApiKeyGuard },
+  ],
 })
 export class AppModule {}

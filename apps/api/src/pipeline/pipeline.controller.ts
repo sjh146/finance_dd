@@ -1,7 +1,18 @@
-import { Body, Controller, Get, Logger, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  ForbiddenException,
+  Get,
+  Logger,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { Consent } from '../adapters/adapter.interface';
+import { ApiKeyGuard } from '../auth/api-key.guard';
+import { AuthMemberId } from '../auth/current-member.decorator';
+import { PrismaService } from '../prisma/prisma.service';
 import {
   PipelineOrchestratorService,
   PipelineRunRequest,
@@ -36,11 +47,13 @@ export interface PipelineRunBody {
  * - GET  /api/pipeline/status → per-queue job counts (waiting/active/completed/failed)
  */
 @Controller('api/pipeline')
+@UseGuards(ApiKeyGuard)
 export class PipelineController {
   private readonly logger = new Logger(PipelineController.name);
 
   constructor(
     private readonly orchestrator: PipelineOrchestratorService,
+    private readonly prisma: PrismaService,
     @InjectQueue(QUEUE_INGEST) private readonly ingestQueue: Queue,
     @InjectQueue(QUEUE_OCR) private readonly ocrQueue: Queue,
     @InjectQueue(QUEUE_CLASSIFY) private readonly classifyQueue: Queue,
@@ -49,7 +62,13 @@ export class PipelineController {
   ) {}
 
   @Post('run')
-  async run(@Body() body: PipelineRunBody): Promise<PipelineRunResult> {
+  async run(
+    @Body() body: PipelineRunBody,
+    @AuthMemberId() authMemberId: string,
+  ): Promise<PipelineRunResult> {
+    // 소유권 검증: businessId가 인증된 회원 소유인지 확인 (아니면 403).
+    await this.assertBusinessOwnership(authMemberId, body.businessId);
+
     const req: PipelineRunRequest = {
       businessId: body.businessId,
       ledgerId: body.ledgerId,
@@ -59,7 +78,7 @@ export class PipelineController {
       to: body.to,
     };
     this.logger.log(
-      `[controller] POST /api/pipeline/run business=${body.businessId} period=${body.period}`,
+      `[controller] POST /api/pipeline/run business=${body.businessId} period=${body.period} member=${authMemberId}`,
     );
     return this.orchestrator.syncAndProcess(req);
   }
@@ -79,6 +98,24 @@ export class PipelineController {
       queues[name] = { waiting, active, completed, failed, delayed };
     }
     return { status: 'ok', queues };
+  }
+
+  /**
+   * businessId가 인증된 회원 소유인지 확인한다. 아니면 403을 던진다.
+   */
+  private async assertBusinessOwnership(
+    authMemberId: string,
+    businessId: string,
+  ): Promise<void> {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { memberId: true },
+    });
+    if (!business || business.memberId !== authMemberId) {
+      throw new ForbiddenException(
+        'You do not have access to this business.',
+      );
+    }
   }
 
   private queueByName(name: string): Queue {

@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { PrismaService } from '@aggelog/api/prisma/prisma.service';
 import { McpServerModule } from './mcp-server.module';
 import { McpServerService } from './mcp-server.service';
 import { TOOL_NAMES } from './tools/schemas';
@@ -12,29 +13,59 @@ import { TOOL_NAMES } from './tools/schemas';
  * 2) 핵심 도구 동작: classify_transaction, predict_tax, get_closing_checklist,
  *    process_receipt, sync_accounts 가 실제 도메인 서비스를 호출해 올바른 결과를
  *    반환하는지 (InMemoryTransport + Client로 tools/call 호출).
+ * 3) 인증/소유권 검증: 인증 실패(401), 교차 테넌트(403) 케이스.
  *
  * DB 의존 도구(list_businesses 등)는 DB가 없어도 명확한 오류를 반환하는지 검증한다.
  */
+
+/** 인증 컨텍스트 해석용 PrismaService 목. */
+function mockPrisma() {
+  return {
+    member: {
+      findUnique: jest.fn().mockResolvedValue({ id: 'member-1' }),
+    },
+    business: {
+      findUnique: jest.fn().mockImplementation(({ where }: { where: { id: string } }) =>
+        where.id === 'biz-1'
+          ? Promise.resolve({ id: 'biz-1', memberId: 'member-1' })
+          : Promise.resolve(null),
+      ),
+    },
+    ledger: {
+      findUnique: jest.fn().mockImplementation(({ where }: { where: { id: string } }) =>
+        where.id === 'ledger-1'
+          ? Promise.resolve({ id: 'ledger-1', business: { memberId: 'member-1' } })
+          : Promise.resolve(null),
+      ),
+    },
+  };
+}
 
 describe('McpServerService', () => {
   let module: TestingModule;
   let mcp: McpServerService;
 
   beforeAll(async () => {
+    // 인증 테스트를 위해 MCP_API_KEY를 설정한다 (시드 회원 키).
+    process.env['MCP_API_KEY'] = '';
     module = await Test.createTestingModule({
       imports: [McpServerModule],
-    }).compile();
+    })
+      .overrideProvider(PrismaService)
+      .useValue(mockPrisma())
+      .compile();
     await module.init();
     mcp = module.get(McpServerService);
   });
 
   afterAll(async () => {
+    delete process.env['MCP_API_KEY'];
     await module.close();
   });
 
   describe('도구 등록 스키마 검증', () => {
     it('8개 도구가 모두 등록된다', async () => {
-      const server = mcp.build();
+      const server = await mcp.build();
       const [clientTransport, serverTransport] =
         InMemoryTransport.createLinkedPair();
       await server.connect(serverTransport);
@@ -51,7 +82,7 @@ describe('McpServerService', () => {
     });
 
     it('각 도구의 입력 스키마에 필수 필드와 한국어 설명이 포함된다', async () => {
-      const server = mcp.build();
+      const server = await mcp.build();
       const [clientTransport, serverTransport] =
         InMemoryTransport.createLinkedPair();
       await server.connect(serverTransport);
@@ -104,7 +135,7 @@ describe('McpServerService', () => {
       name: string,
       args: Record<string, unknown>,
     ): Promise<{ text: string }> {
-      const server = mcp.build();
+      const server = await mcp.build();
       const [clientTransport, serverTransport] =
         InMemoryTransport.createLinkedPair();
       await server.connect(serverTransport);
@@ -194,7 +225,9 @@ describe('McpServerService', () => {
     });
 
     it('list_businesses: 사업체 목록을 반환한다 (DB 연결 시)', async () => {
-      const { text } = await callTool('list_businesses', {});
+      const { text } = await callTool('list_businesses', {
+        memberId: 'member-1',
+      });
       const parsed = JSON.parse(text);
       // DB가 연결되어 있으면 사업체 배열을, 아니면 명확한 error를 반환한다.
       if (Array.isArray(parsed)) {
@@ -207,6 +240,77 @@ describe('McpServerService', () => {
         expect(parsed).toHaveProperty('error');
         expect(String(parsed.error)).toContain('DB');
       }
+    });
+  });
+
+  describe('인증/소유권 검증', () => {
+    async function callTool(
+      name: string,
+      args: Record<string, unknown>,
+    ): Promise<{ text: string }> {
+      const server = await mcp.build();
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client({ name: 'test-client', version: '1.0.0' });
+      await client.connect(clientTransport);
+
+      const result = await client.callTool({ name, arguments: args });
+      const text = (result.content as Array<{ type: string; text: string }>)
+        .filter((c) => c.type === 'text')
+        .map((c) => c.text)
+        .join('\n');
+
+      await client.close();
+      await server.close();
+      return { text };
+    }
+
+    it('list_businesses: memberId 생략 시 400 오류를 반환한다', async () => {
+      const { text } = await callTool('list_businesses', {});
+      const parsed = JSON.parse(text);
+      expect(parsed).toHaveProperty('error');
+      expect(String(parsed.error)).toContain('memberId');
+    });
+
+    it('list_businesses: 다른 회원의 memberId로 조회 시 403 오류를 반환한다', async () => {
+      const { text } = await callTool('list_businesses', {
+        memberId: 'other-member',
+      });
+      const parsed = JSON.parse(text);
+      expect(parsed).toHaveProperty('error');
+      expect(String(parsed.error)).toContain('권한');
+    });
+
+    it('get_ledger: 다른 회원의 businessId로 조회 시 403 오류를 반환한다', async () => {
+      const { text } = await callTool('get_ledger', {
+        businessId: 'other-biz',
+        period: '2026-Q1',
+        type: 'QUARTERLY',
+      });
+      const parsed = JSON.parse(text);
+      expect(parsed).toHaveProperty('error');
+      expect(String(parsed.error)).toContain('권한');
+    });
+
+    it('list_transactions: 다른 회원의 ledgerId로 조회 시 403 오류를 반환한다', async () => {
+      const { text } = await callTool('list_transactions', {
+        ledgerId: 'other-ledger',
+      });
+      const parsed = JSON.parse(text);
+      expect(parsed).toHaveProperty('error');
+      expect(String(parsed.error)).toContain('권한');
+    });
+
+    it('predict_tax: 다른 회원의 businessId로 예측 시 403 오류를 반환한다', async () => {
+      const { text } = await callTool('predict_tax', {
+        businessId: 'other-biz',
+        period: '2026-Q1',
+        supplyValue: 10_000_000,
+      });
+      const parsed = JSON.parse(text);
+      expect(parsed).toHaveProperty('error');
+      expect(String(parsed.error)).toContain('권한');
     });
   });
 });

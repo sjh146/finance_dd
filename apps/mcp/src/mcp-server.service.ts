@@ -10,6 +10,7 @@ import { RegionalRoutingPolicy } from '@aggelog/api/llm/regional-routing.policy'
 import { PrismaService } from '@aggelog/api/prisma/prisma.service';
 import { registerTools } from './tools/tools';
 import { TOOL_NAMES } from './tools/schemas';
+import { McpAuthContext, resolveAuthContext } from './auth-context';
 
 /**
  * McpServerService — MCP 서버를 구성하고 stdio transport로 연결한다.
@@ -24,6 +25,7 @@ import { TOOL_NAMES } from './tools/schemas';
 @Injectable()
 export class McpServerService implements OnModuleDestroy {
   private server: McpServer | null = null;
+  private authContext: McpAuthContext = { memberId: null, authenticated: false };
 
   constructor(
     private readonly prisma: PrismaService,
@@ -39,7 +41,10 @@ export class McpServerService implements OnModuleDestroy {
    * McpServer 인스턴스를 생성하고 모든 도구를 등록한다.
    * transport 연결은 하지 않는다 (테스트에서 도구 스키마 검증에 사용).
    */
-  build(): McpServer {
+  async build(): Promise<McpServer> {
+    // 서버 시작 시 1회 인증 (MCP_API_KEY로 호출자 식별).
+    this.authContext = await resolveAuthContext(this.prisma);
+
     const server = new McpServer({
       name: 'aggelog-mcp',
       version: '0.1.0',
@@ -53,6 +58,7 @@ export class McpServerService implements OnModuleDestroy {
       prediction: this.prediction,
       adapters: this.adapters,
       routing: this.routing,
+      auth: this.authContext,
     });
 
     this.server = server;
@@ -69,7 +75,7 @@ export class McpServerService implements OnModuleDestroy {
    * stdin/stdout을 통해 이 프로세스와 통신한다.
    */
   async run(): Promise<void> {
-    const server = this.build();
+    const server = await this.build();
     const transport = new StdioServerTransport();
     await server.connect(transport);
   }

@@ -36,6 +36,26 @@ function loadDatabaseUrlFromEnvExample(): void {
 }
 
 /**
+ * .env.example에서 MCP_API_KEY를 주입한다 (실제 .env는 읽지 않음).
+ * 이미 process.env에 MCP_API_KEY가 있으면 그대로 사용한다.
+ */
+function loadMcpApiKeyFromEnvExample(): void {
+  if (process.env['MCP_API_KEY']) {
+    return;
+  }
+  const envExamplePath = resolve(__dirname, '../../../.env.example');
+  try {
+    const content = readFileSync(envExamplePath, 'utf8');
+    const match = /^MCP_API_KEY=(.+)$/m.exec(content);
+    if (match) {
+      process.env['MCP_API_KEY'] = match[1].trim();
+    }
+  } catch {
+    // MCP_API_KEY가 없으면 인증되지 않은 컨텍스트로 동작 (도구는 401).
+  }
+}
+
+/**
  * MCP 서버 부트스트랩.
  *
  * NestFactory.createApplicationContext로 NestJS 애플리케이션 컨텍스트를
@@ -44,6 +64,7 @@ function loadDatabaseUrlFromEnvExample(): void {
  */
 async function bootstrap(): Promise<void> {
   loadDatabaseUrlFromEnvExample();
+  loadMcpApiKeyFromEnvExample();
 
   const app = await NestFactory.createApplicationContext(McpServerModule, {
     logger: ['error', 'warn'],

@@ -18,6 +18,11 @@ import {
   ProcessReceiptSchema,
   SyncAccountsSchema,
 } from './schemas';
+import {
+  McpAuthContext,
+  isBusinessOwnedBy,
+  isLedgerOwnedBy,
+} from '../auth-context';
 
 /**
  * MCP 도구 핸들러 등록.
@@ -38,6 +43,29 @@ function textContent(text: string) {
   return { content: [{ type: 'text' as const, text }] };
 }
 
+/** 인증 실패 응답 (401). */
+function unauthorized(): ReturnType<typeof textContent> {
+  return textContent(
+    JSON.stringify({
+      error: '인증되지 않은 요청입니다. MCP_API_KEY를 설정하고 유효한 API 키를 제공하세요.',
+    }),
+  );
+}
+
+/** 소유권 위반 응답 (403). */
+function forbidden(): ReturnType<typeof textContent> {
+  return textContent(
+    JSON.stringify({
+      error: '이 리소스에 대한 접근 권한이 없습니다.',
+    }),
+  );
+}
+
+/** 잘못된 요청 응답 (400). */
+function badRequest(message: string): ReturnType<typeof textContent> {
+  return textContent(JSON.stringify({ error: message }));
+}
+
 /**
  * 모든 도구를 McpServer에 등록한다.
  */
@@ -51,6 +79,7 @@ export function registerTools(
     prediction: TaxPredictionService;
     adapters: TransactionAdapterFactory;
     routing: RegionalRoutingPolicy;
+    auth: McpAuthContext;
   },
 ): void {
   const {
@@ -61,6 +90,7 @@ export function registerTools(
     prediction: predictionService,
     adapters,
     routing: routingPolicy,
+    auth,
   } = deps;
 
   // -------------------------------------------------------------------------
@@ -75,9 +105,21 @@ export function registerTools(
       inputSchema: ListBusinessesSchema,
     },
     async (args) => {
+      // 인증 확인.
+      if (!auth.authenticated || !auth.memberId) {
+        return unauthorized();
+      }
+      // memberId 필수 (생략 시 400).
+      if (!args.memberId) {
+        return badRequest('memberId는 필수입니다.');
+      }
+      // 소유권 검증: 인증된 회원 자신의 사업체만 조회 가능.
+      if (args.memberId !== auth.memberId) {
+        return forbidden();
+      }
       try {
         const businesses = await prisma.business.findMany({
-          where: args.memberId ? { memberId: args.memberId } : undefined,
+          where: { memberId: auth.memberId },
           orderBy: { createdAt: 'asc' },
         });
         return textContent(JSON.stringify(businesses, null, 2));
@@ -99,6 +141,18 @@ export function registerTools(
       inputSchema: GetLedgerSchema,
     },
     async (args) => {
+      // 인증 + 소유권 검증: businessId가 인증된 회원 소유인지 확인.
+      if (!auth.authenticated || !auth.memberId) {
+        return unauthorized();
+      }
+      try {
+        const owned = await isBusinessOwnedBy(prisma, args.businessId, auth.memberId);
+        if (!owned) {
+          return forbidden();
+        }
+      } catch (e) {
+        return textContent(JSON.stringify({ error: dbError(e) }));
+      }
       try {
         const ledger = await prisma.ledger.findUnique({
           where: {
@@ -136,6 +190,18 @@ export function registerTools(
       inputSchema: ListTransactionsSchema,
     },
     async (args) => {
+      // 인증 + 소유권 검증: ledgerId가 인증된 회원 소유인지 확인.
+      if (!auth.authenticated || !auth.memberId) {
+        return unauthorized();
+      }
+      try {
+        const owned = await isLedgerOwnedBy(prisma, args.ledgerId, auth.memberId);
+        if (!owned) {
+          return forbidden();
+        }
+      } catch (e) {
+        return textContent(JSON.stringify({ error: dbError(e) }));
+      }
       try {
         const transactions = await prisma.transaction.findMany({
           where: {
@@ -170,6 +236,10 @@ export function registerTools(
       inputSchema: ClassifyTransactionSchema,
     },
     async (args) => {
+      // 인증 확인 (분류는 리소스 소유권이 없지만 인증된 호출자만 허용).
+      if (!auth.authenticated || !auth.memberId) {
+        return unauthorized();
+      }
       // 금융 거래 적요는 FINANCIAL_SENSITIVE → 국내 강제 (TECH §3.1).
       const routing = routingPolicy.route(DataSensitivity.FINANCIAL_SENSITIVE);
       const result = await classification.classify({
@@ -195,6 +265,18 @@ export function registerTools(
       inputSchema: PredictTaxSchema,
     },
     async (args) => {
+      // 인증 + 소유권 검증: businessId가 인증된 회원 소유인지 확인.
+      if (!auth.authenticated || !auth.memberId) {
+        return unauthorized();
+      }
+      try {
+        const owned = await isBusinessOwnedBy(prisma, args.businessId, auth.memberId);
+        if (!owned) {
+          return forbidden();
+        }
+      } catch (e) {
+        return textContent(JSON.stringify({ error: dbError(e) }));
+      }
       // 예측 계산은 DB 의존 없이 규칙 템플릿으로 수행한다 (TECH §4.2).
       const prediction = new VatRuleTemplate().predict(
         {
@@ -244,6 +326,18 @@ export function registerTools(
       inputSchema: GetClosingChecklistSchema,
     },
     async (args) => {
+      // 인증 + 소유권 검증: businessId가 인증된 회원 소유인지 확인.
+      if (!auth.authenticated || !auth.memberId) {
+        return unauthorized();
+      }
+      try {
+        const owned = await isBusinessOwnedBy(prisma, args.businessId, auth.memberId);
+        if (!owned) {
+          return forbidden();
+        }
+      } catch (e) {
+        return textContent(JSON.stringify({ error: dbError(e) }));
+      }
       const type = args.type ?? 'QUARTERLY';
       let summary = {
         transactionCount: args.transactionCount ?? 0,
@@ -310,6 +404,10 @@ export function registerTools(
       inputSchema: ProcessReceiptSchema,
     },
     async (args) => {
+      // 인증 확인 (OCR은 리소스 소유권이 없지만 인증된 호출자만 허용).
+      if (!auth.authenticated || !auth.memberId) {
+        return unauthorized();
+      }
       try {
         const buffer = Buffer.from(args.imageBase64, 'base64');
         const result = await ocr.extractReceipt(buffer);
@@ -341,6 +439,10 @@ export function registerTools(
       inputSchema: SyncAccountsSchema,
     },
     async (args) => {
+      // 인증 확인 (동기화는 인증된 호출자만 허용).
+      if (!auth.authenticated || !auth.memberId) {
+        return unauthorized();
+      }
       try {
         const from = new Date(args.from);
         const to = new Date(args.to);
