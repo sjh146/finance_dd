@@ -8,6 +8,7 @@ import { ClassificationModule } from './classification/classification.module';
 import { PredictionModule } from './prediction/prediction.module';
 import { ClosingModule } from './closing/closing.module';
 import { LlmModule } from './llm/llm.module';
+import { PipelineModule } from './pipeline/pipeline.module';
 import { DomainHealthController } from './domain-health.controller';
 
 @Module({
@@ -19,6 +20,7 @@ import { DomainHealthController } from './domain-health.controller';
     PredictionModule,
     ClosingModule,
     LlmModule,
+    PipelineModule,
   ],
   controllers: [AppController, DomainHealthController],
   providers: [AppService],

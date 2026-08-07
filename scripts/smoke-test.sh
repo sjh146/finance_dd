@@ -6,6 +6,7 @@
 #   1. 루트 빌드 (apps/api + packages/contracts + apps/mcp)
 #   2. API 유닛 테스트 (jest)
 #   3. API 서버 기동 → GET /health, GET /api/domain/health 응답 확인
+#      + 파이프라인 smoke (POST /api/pipeline/run + GET /api/pipeline/status)
 #   4. MCP 서버 부팅 확인 (stdio initialize 핸드셰이크)
 #
 # 사용법: bash scripts/smoke-test.sh   (또는 npm run smoke)
@@ -151,6 +152,54 @@ else
     fi
   else
     fail "GET /api/domain/health → 응답 없음"
+  fi
+
+  # -------------------------------------------------------------------------
+  # 파이프라인 smoke — BullMQ 워커 파이프라인 run + 상태 확인
+  # (ingest -> classify -> predict -> notify)
+  # -------------------------------------------------------------------------
+  log "  파이프라인 smoke (POST /api/pipeline/run + GET /api/pipeline/status)"
+
+  # 시드된 business/ledger/consent id를 DB에서 조회 (DATABASE_URL은 .env.example에서 주입)
+  PIPELINE_IDS="$(cd "$ROOT_DIR" && env DATABASE_URL="$DATABASE_URL" npx tsx scripts/pipeline-smoke-ids.ts 2>/dev/null)"
+  if [ -z "$PIPELINE_IDS" ]; then
+    fail "파이프라인 smoke — 시드 데이터 조회 실패 (seed 필요)"
+  else
+    BIZ_ID="$(echo "$PIPELINE_IDS" | sed -n 's/.*"businessId":"\([^"]*\)".*/\1/p')"
+    LEDGER_ID="$(echo "$PIPELINE_IDS" | sed -n 's/.*"ledgerId":"\([^"]*\)".*/\1/p')"
+    CONSENT_TYPE="$(echo "$PIPELINE_IDS" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')"
+    CONSENT_SCOPE="$(echo "$PIPELINE_IDS" | sed -n 's/.*"scope":"\([^"]*\)".*/\1/p')"
+    CONSENT_STATUS="$(echo "$PIPELINE_IDS" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
+
+    if [ -n "$BIZ_ID" ] && [ -n "$LEDGER_ID" ]; then
+      # POST /api/pipeline/run — 전체 파이프라인 트리거
+      RUN_BODY="$(curl -sf -X POST "http://localhost:$SMOKE_PORT/api/pipeline/run" \
+        -H 'Content-Type: application/json' \
+        -d "{\"businessId\":\"$BIZ_ID\",\"ledgerId\":\"$LEDGER_ID\",\"period\":\"2026-Q1\",\"consent\":{\"id\":\"seed-consent\",\"type\":\"$CONSENT_TYPE\",\"scope\":\"$CONSENT_SCOPE\",\"status\":\"$CONSENT_STATUS\"}}" 2>/dev/null)"
+      if [ -n "$RUN_BODY" ] && echo "$RUN_BODY" | grep -q '"ingestJobId"'; then
+        ok "POST /api/pipeline/run → ingest job 등록"
+      else
+        fail "POST /api/pipeline/run → 응답 없음/오류: '$RUN_BODY'"
+      fi
+
+      # GET /api/pipeline/status — 큐 상태 확인 (워커가 처리할 시간을 준다)
+      sleep 2
+      STATUS_BODY="$(curl -sf "http://localhost:$SMOKE_PORT/api/pipeline/status" 2>/dev/null)"
+      if [ -n "$STATUS_BODY" ] && echo "$STATUS_BODY" | grep -q '"status":"ok"'; then
+        ok "GET /api/pipeline/status → 응답 수신"
+        for Q in ingest-queue ocr-queue classify-queue predict-queue notify-queue; do
+          if echo "$STATUS_BODY" | grep -q "\"$Q\""; then
+            ok "  $Q 큐 등록"
+          else
+            fail "  $Q 큐 누락"
+          fi
+        done
+      else
+        fail "GET /api/pipeline/status → 응답 없음/오류"
+      fi
+    else
+      fail "파이프라인 smoke — 시드 id 파싱 실패"
+    fi
   fi
 fi
 
