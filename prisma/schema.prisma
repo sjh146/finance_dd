@@ -206,6 +206,7 @@ model Transaction {
   vouchers Voucher[] @relation("VoucherTransactions")
 
   @@index([ledgerId, occurredAt])
+  @@unique([ledgerId, finNo])
   @@map("transactions")
 }
 
@@ -223,6 +224,7 @@ model Voucher {
   lines    VoucherLine[]
   classifications Classification[]
 
+  @@unique([ledgerId, source])
   @@map("vouchers")
 }
 

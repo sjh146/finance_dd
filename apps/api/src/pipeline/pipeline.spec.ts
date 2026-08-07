@@ -42,10 +42,12 @@ function mockPrisma() {
       findFirst: jest.fn(),
       findUnique: jest.fn(),
       create: jest.fn(),
+      upsert: jest.fn(),
     },
     voucher: {
       findFirst: jest.fn(),
       create: jest.fn(),
+      upsert: jest.fn(),
     },
     voucherLine: {
       create: jest.fn(),
@@ -157,10 +159,19 @@ describe('IngestProcessor', () => {
 
   it('fetches transactions, persists them, and chains classify jobs', async () => {
     prisma.transaction.findFirst.mockResolvedValue(null);
-    prisma.voucher.findFirst.mockResolvedValue({ id: 'voucher-1' });
-    prisma.transaction.create.mockImplementation(async (args: { data: { finNo: string } }) => ({
-      id: `txn-${args.data.finNo}`,
-    }));
+    prisma.voucher.upsert.mockResolvedValue({ id: 'voucher-1' });
+    // upsert returns a freshly-created row (createdAt === updatedAt) so the
+    // processor counts it as newly ingested.
+    prisma.transaction.upsert.mockImplementation(
+      async (args: { create: { finNo: string } }) => {
+        const now = new Date('2026-01-01T00:00:00.000Z');
+        return {
+          id: `txn-${args.create.finNo}`,
+          createdAt: now,
+          updatedAt: now,
+        };
+      },
+    );
     prisma.voucherLine.create.mockResolvedValue({ id: 'line-1' });
 
     const job = makeJob<IngestJobData>({
@@ -177,7 +188,7 @@ describe('IngestProcessor', () => {
     // 4 sample transactions ingested.
     expect(result.ingested).toBe(4);
     expect(result.classified).toBe(4);
-    expect(prisma.transaction.create).toHaveBeenCalledTimes(4);
+    expect(prisma.transaction.upsert).toHaveBeenCalledTimes(4);
     // One classify job chained per ingested transaction.
     expect(classifyQueue.add).toHaveBeenCalledTimes(4);
     expect(classifyQueue.add).toHaveBeenCalledWith(
@@ -190,7 +201,14 @@ describe('IngestProcessor', () => {
 
   it('skips already-ingested transactions (idempotent)', async () => {
     prisma.transaction.findFirst.mockResolvedValue({ id: 'existing' });
-    prisma.voucher.findFirst.mockResolvedValue({ id: 'voucher-1' });
+    prisma.voucher.upsert.mockResolvedValue({ id: 'voucher-1' });
+    // upsert returns an existing row (updatedAt > createdAt) so the processor
+    // treats it as already-ingested and does not re-count or re-classify.
+    prisma.transaction.upsert.mockResolvedValue({
+      id: 'existing',
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+    });
 
     const job = makeJob<IngestJobData>({
       consent: { id: 'c1', type: 'mydata', scope: 's', status: 'ACTIVE' },
@@ -204,8 +222,49 @@ describe('IngestProcessor', () => {
     const result = await processor.process(job);
 
     expect(result.ingested).toBe(0);
-    expect(prisma.transaction.create).not.toHaveBeenCalled();
+    expect(prisma.transaction.upsert).toHaveBeenCalledTimes(4);
     expect(classifyQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('does not double-count when concurrent ingests race on the same (ledgerId, finNo)', async () => {
+    prisma.transaction.findFirst.mockResolvedValue(null);
+    prisma.voucher.upsert.mockResolvedValue({ id: 'voucher-1' });
+    // Simulate a concurrent ingest: the first upsert creates the row, the
+    // second (racing) upsert finds it already present and returns the existing
+    // row (updatedAt > createdAt). Exactly one row is counted.
+    const now = new Date('2026-01-01T00:00:00.000Z');
+    const later = new Date('2026-01-01T00:00:01.000Z');
+    const seen = new Set<string>();
+    prisma.transaction.upsert.mockImplementation(
+      async (args: { create: { finNo: string } }) => {
+        if (seen.has(args.create.finNo)) {
+          return { id: `txn-${args.create.finNo}`, createdAt: now, updatedAt: later };
+        }
+        seen.add(args.create.finNo);
+        return { id: `txn-${args.create.finNo}`, createdAt: now, updatedAt: now };
+      },
+    );
+    prisma.voucherLine.create.mockResolvedValue({ id: 'line-1' });
+
+    const job = makeJob<IngestJobData>({
+      consent: { id: 'c1', type: 'mydata', scope: 's', status: 'ACTIVE' },
+      ledgerId: 'ledger-1',
+      businessId: 'biz-1',
+      period: '2026-Q1',
+      from: '2026-01-01T00:00:00.000Z',
+      to: '2026-01-31T23:59:59.000Z',
+    });
+
+    // Run the same ingest twice concurrently to mimic two pipeline runs.
+    const [first, second] = await Promise.all([
+      processor.process(job),
+      processor.process(job),
+    ]);
+
+    // Across both runs, each (ledgerId, finNo) is counted exactly once.
+    expect(first.ingested + second.ingested).toBe(4);
+    expect(first.classified + second.classified).toBe(4);
+    expect(classifyQueue.add).toHaveBeenCalledTimes(4);
   });
 });
 

@@ -80,26 +80,61 @@ export class IngestProcessor extends WorkerHost {
     let ingested = 0;
     let classified = 0;
     for (const raw of rawTransactions) {
-      // Idempotent: skip if a transaction with the same finNo already exists
-      // in this ledger.
-      const existing = await this.prisma.transaction.findFirst({
-        where: { ledgerId, finNo: raw.finNo },
-      });
-      if (existing) {
+      // Persist atomically via upsert keyed on the (ledgerId, finNo) unique
+      // constraint. This replaces the previous create + P2002-catch sequence,
+      // which was still vulnerable to a TOCTOU race (CWE-362): two concurrent
+      // ingests could both attempt create, and while the unique index turns the
+      // second into a P2002, the check-then-act window remained. upsert is
+      // atomic — exactly one row exists per (ledgerId, finNo).
+      //
+      // finNo is nullable; when it is null the unique constraint does not apply
+      // (PostgreSQL treats NULLs as distinct), so we fall back to a plain create
+      // for those rows.
+      const transaction = await (raw.finNo
+        ? this.prisma.transaction.upsert({
+            where: {
+              ledgerId_finNo: { ledgerId, finNo: raw.finNo },
+            },
+            update: {
+              // Keep the existing row; refresh mutable fields so a re-ingest
+              // reflects the latest fetched values without duplicating.
+              bankAcct: raw.account,
+              amount: raw.amount,
+              occurredAt: raw.occurredAt,
+              summary: raw.summary,
+              provider: this.mapProvider(raw.provider),
+            },
+            create: {
+              ledgerId,
+              bankAcct: raw.account,
+              finNo: raw.finNo,
+              amount: raw.amount,
+              occurredAt: raw.occurredAt,
+              summary: raw.summary,
+              provider: this.mapProvider(raw.provider),
+            },
+          })
+        : this.prisma.transaction.create({
+            data: {
+              ledgerId,
+              bankAcct: raw.account,
+              finNo: raw.finNo,
+              amount: raw.amount,
+              occurredAt: raw.occurredAt,
+              summary: raw.summary,
+              provider: this.mapProvider(raw.provider),
+            },
+          }));
+
+      // A freshly created row has createdAt === updatedAt (same timestamp).
+      // An existing row that was merely updated has updatedAt > createdAt.
+      // Only count + chain classify for newly created rows so a re-ingest of an
+      // already-persisted transaction does not double-count revenue or re-run
+      // classification.
+      const isNew = transaction.createdAt.getTime() === transaction.updatedAt.getTime();
+      if (!isNew) {
         continue;
       }
-
-      const transaction = await this.prisma.transaction.create({
-        data: {
-          ledgerId,
-          bankAcct: raw.account,
-          finNo: raw.finNo,
-          amount: raw.amount,
-          occurredAt: raw.occurredAt,
-          summary: raw.summary,
-          provider: this.mapProvider(raw.provider),
-        },
-      });
       ingested += 1;
 
       // Create a voucher line for the transaction and chain a classify job.
@@ -134,14 +169,10 @@ export class IngestProcessor extends WorkerHost {
 
   /** Ensure a voucher exists for the ledger (idempotent). */
   private async ensureVoucher(ledgerId: string, _period: string) {
-    const existing = await this.prisma.voucher.findFirst({
-      where: { ledgerId, source: 'OPENBANK' },
-    });
-    if (existing) {
-      return existing;
-    }
-    return this.prisma.voucher.create({
-      data: {
+    return this.prisma.voucher.upsert({
+      where: { ledgerId_source: { ledgerId, source: 'OPENBANK' } },
+      update: {},
+      create: {
         ledgerId,
         date: new Date(),
         status: 'PROVISIONAL',
