@@ -34,13 +34,17 @@ if [ -z "$DATABASE_URL" ]; then
   exit 1
 fi
 
-# .env.example에서 API 키 추출 (실제 .env는 읽지 않음). 환경변수가 이미 있으면 우선 사용.
-# 시드 회원의 apiKey와 일치해야 한다 (prisma/seed.ts: SEED_API_KEY 또는 랜덤 생성).
-# SEED_API_KEY가 비어 있으면(랜덤 시드) 스모크 테스트가 인증할 수 없으므로,
-# 개발용으로 .env.example에 고정 SEED_API_KEY를 설정해 두는 것을 권장한다.
-API_KEY="${API_KEY:-$(grep -E '^SEED_API_KEY=' "$ROOT_DIR/.env.example" | head -1 | cut -d= -f2-)}"
+# 인증 키 획득:
+#   1. 환경변수 SEED_API_KEY 가 설정된 경우(로컬 개발) 그 값을 우선 사용.
+#   2. 그 외에는 시드된 DB의 members 테이블에서 api_key 를 직접 조회해 사용
+#      (DATABASE_URL 은 .env.example 에서 주입). .env.example 의 SEED_API_KEY 는
+#      참조하지 않는다 — 커밋된 고정 키에 의존하지 않기 위함.
+API_KEY="${API_KEY:-${SEED_API_KEY:-}}"
 if [ -z "$API_KEY" ]; then
-  echo "ERROR: .env.example에서 SEED_API_KEY를 찾을 수 없습니다. 시드 회원 인증 키를 설정하세요."
+  API_KEY="$(cd "$ROOT_DIR" && env DATABASE_URL="$DATABASE_URL" npx tsx scripts/smoke-api-key.ts 2>/dev/null)"
+fi
+if [ -z "$API_KEY" ]; then
+  echo "ERROR: 시드 회원 인증 키를 조회할 수 없습니다. SEED_API_KEY 환경변수를 설정하거나 시드된 DB(members.api_key)가 필요합니다."
   exit 1
 fi
 

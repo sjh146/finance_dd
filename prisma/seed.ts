@@ -22,8 +22,10 @@ const adapter = new PrismaPg(databaseUrl);
 const prisma = new PrismaClient({ adapter });
 
 // 시드 회원 apiKey 결정 로직:
-//   - 환경변수 SEED_API_KEY 가 있으면 그 값을 사용 (개발용 고정값 원할 때).
-//   - 없으면 crypto.randomBytes 로 랜덤 생성 (운영 기본값).
+//   - 환경변수 SEED_API_KEY 가 비어 있지 않은 값으로 설정되면 그 값을 사용
+//     (개발용 고정값 원할 때 — .env 에 두고 커밋하지 않는다).
+//   - SEED_API_KEY 가 없거나 빈 문자열이면 crypto.randomBytes 로 랜덤 생성
+//     (운영 기본값). 빈 문자열도 랜덤 처리된다.
 // 생성된 키는 콘솔에 출력해 사용자/테스트가 확인할 수 있게 한다.
 function resolveSeedApiKey(): string {
   const fromEnv = process.env['SEED_API_KEY'];
