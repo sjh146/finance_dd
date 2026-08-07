@@ -9,6 +9,7 @@
 //
 // Run: npx prisma db seed   (wired via prisma.config.ts migrations.seed)
 import 'dotenv/config';
+import { randomBytes } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 
@@ -20,18 +21,38 @@ if (!databaseUrl) {
 const adapter = new PrismaPg(databaseUrl);
 const prisma = new PrismaClient({ adapter });
 
+// 시드 회원 apiKey 결정 로직:
+//   - 환경변수 SEED_API_KEY 가 있으면 그 값을 사용 (개발용 고정값 원할 때).
+//   - 없으면 crypto.randomBytes 로 랜덤 생성 (운영 기본값).
+// 생성된 키는 콘솔에 출력해 사용자/테스트가 확인할 수 있게 한다.
+function resolveSeedApiKey(): string {
+  const fromEnv = process.env['SEED_API_KEY'];
+  if (fromEnv && fromEnv.trim().length > 0) {
+    return fromEnv.trim();
+  }
+  return randomBytes(32).toString('hex');
+}
+
 async function main() {
   // --- Member (unique: oidcSub) ---
-  // apiKey: MVP API 키 인증용. 시드 회원은 결정적 키를 부여해 스모크 테스트가
-  // X-API-Key 헤더로 인증할 수 있게 한다. (실제 운영에서는 랜덤 생성)
+  // apiKey: MVP API 키 인증용. 시드 회원은 SEED_API_KEY(설정 시) 또는 랜덤 키를
+  // 부여해 스모크 테스트가 X-API-Key 헤더로 인증할 수 있게 한다.
+  // upsert: 이미 존재하는 멤버면 기존 apiKey 를 유지하고, 신규면 랜덤 키를 부여한다.
+  const seedApiKey = resolveSeedApiKey();
+  const existingMember = await prisma.member.findUnique({
+    where: { oidcSub: 'seed-oidc-sub-0001' },
+    select: { apiKey: true },
+  });
+  const memberApiKey = existingMember ? existingMember.apiKey : seedApiKey;
+
   const member = await prisma.member.upsert({
     where: { oidcSub: 'seed-oidc-sub-0001' },
-    update: { apiKey: '' },
+    update: {},
     create: {
       oidcSub: 'seed-oidc-sub-0001',
       name: '김아끼',
       contact: 'kim@example.com',
-      apiKey: '',
+      apiKey: memberApiKey,
     },
   });
 
@@ -248,6 +269,7 @@ async function main() {
 
   console.log('Seed complete.');
   console.log({ member: member.id, business: business.id, consent: consent.id, ledger: ledger.id, voucher: voucher.id });
+  console.log(`Seed member apiKey: ${member.apiKey}`);
 }
 
 main()

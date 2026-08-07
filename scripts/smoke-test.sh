@@ -35,10 +35,13 @@ if [ -z "$DATABASE_URL" ]; then
 fi
 
 # .env.example에서 API 키 추출 (실제 .env는 읽지 않음). 환경변수가 이미 있으면 우선 사용.
-# 시드 회원의 apiKey와 일치해야 한다 (prisma/seed.ts: ).
-API_KEY="${API_KEY:-$(grep -E '^MCP_API_KEY=' "$ROOT_DIR/.env.example" | head -1 | cut -d= -f2-)}"
+# 시드 회원의 apiKey와 일치해야 한다 (prisma/seed.ts: SEED_API_KEY 또는 랜덤 생성).
+# SEED_API_KEY가 비어 있으면(랜덤 시드) 스모크 테스트가 인증할 수 없으므로,
+# 개발용으로 .env.example에 고정 SEED_API_KEY를 설정해 두는 것을 권장한다.
+API_KEY="${API_KEY:-$(grep -E '^SEED_API_KEY=' "$ROOT_DIR/.env.example" | head -1 | cut -d= -f2-)}"
 if [ -z "$API_KEY" ]; then
-  API_KEY=""
+  echo "ERROR: .env.example에서 SEED_API_KEY를 찾을 수 없습니다. 시드 회원 인증 키를 설정하세요."
+  exit 1
 fi
 
 PASS_COUNT=0
