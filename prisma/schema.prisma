@@ -1,7 +1,15 @@
-// 아끼로그 (AggeLog) — Prisma schema (placeholder).
-// Full entities (Member, Business, Consent, Ledger, Transaction, Voucher,
-// VoucherLine, Classification, TaxPrediction, Filing, Notification) are added
-// in a subsequent task.
+// 아끼로그 (AggeLog) — Prisma schema (MVP).
+// 11 entities per TECH_ARCHITECTURE.md §2.1:
+// Member, Business, Consent, Ledger, Transaction, Voucher, VoucherLine,
+// Classification, TaxPrediction, Filing, Notification.
+//
+// Design notes:
+// - snake_case DB columns via @@map / @map (PostgreSQL convention).
+// - DataSensitivity enum drives LLM gateway regional routing (§3.1):
+//   FINANCIAL_SENSITIVE → 국내 강제, PERSONAL → 국내 우선, GENERAL → 자유.
+// - 금융 거래·적요 필드(Transaction.summary, VoucherLine.account 등)는
+//   AES-256-GCM 필드 단위 암호화 대상. MVP에서는 필드 존재만, 실제 암호화는 후속.
+// - 보존 5년 / 삭제권 충돌 → 비식별화 후 별도 보관 (TECH §2.2).
 
 generator client {
   provider = "prisma-client-js"
@@ -9,5 +17,300 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+// 동의 유형 — 'mydata' 채널 강조 (TECH §3, P0-1)
+enum ConsentType {
+  openbanking
+  mydata
+  hometax
+}
+
+enum ConsentStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+  PENDING
+}
+
+enum LedgerType {
+  MONTHLY // 년월
+  QUARTERLY // 분기
+}
+
+enum LedgerStatus {
+  OPEN
+  CLOSED
+}
+
+// 거래 출처 제공자
+enum TransactionProvider {
+  OPENBANKING
+  MYDATA
+  BANK_API
+  CARD
+  MANUAL
+  PG
+}
+
+enum VoucherStatus {
+  PROVISIONAL // 잠정
+  CONFIRMED // 확정
+  REVISED // 수정
+}
+
+enum VoucherSource {
+  OPENBANK
+  OCR
+  MANUAL
+}
+
+// 분류 단계 (TECH §4.1): L1 규칙 → L2 임베딩 → L3 LLM
+enum ClassificationLevel {
+  L1
+  L2
+  L3
+}
+
+enum TaxType {
+  VAT // 부가가치세
+  INCOME // 종합소득세
+  CORPORATE // 법인세
+  WITHHOLDING // 원천세
+  SOCIAL_INSURANCE // 4대보험
+}
+
+enum FilingStatus {
+  DRAFT
+  SUBMITTED
+  ACCEPTED
+  REJECTED
+  AMENDED
+}
+
+enum NotificationKind {
+  DEADLINE // 마감
+  FILING // 신고
+  PAYMENT // 납부
+  ANOMALY // 이상
+}
+
+enum NotificationChannel {
+  WEB_PUSH
+  EMAIL
+  SMS
+  IN_APP
+}
+
+// LLM 게이트웨이 지역 라우팅 데이터 등급 (TECH §3.1)
+enum DataSensitivity {
+  FINANCIAL_SENSITIVE // 금융 민감 → 국내 강제
+  PERSONAL // 개인 → 국내 우선
+  GENERAL // 일반 → 자유
+}
+
+// ---------------------------------------------------------------------------
+// Entities
+// ---------------------------------------------------------------------------
+
+model Member {
+  id        String   @id @default(cuid())
+  oidcSub   String   @unique @map("oidc_sub") // 외부 인증 ID (OIDC subject)
+  name      String
+  contact   String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  businesses    Business[]
+  consents      Consent[]
+  notifications Notification[]
+
+  @@map("members")
+}
+
+model Business {
+  id        String   @id @default(cuid())
+  memberId  String   @map("member_id")
+  bizNo     String   @unique @map("biz_no") // 사업자등록번호
+  name      String
+  industry  String?
+  type      String // 개인/법인 (BusinessType enum 대신 자유 문자열 — MVP)
+  scale     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  member         Member         @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  ledgers        Ledger[]
+  taxPredictions TaxPrediction[]
+  filings        Filing[]
+
+  @@map("businesses")
+}
+
+model Consent {
+  id        String        @id @default(cuid())
+  memberId  String        @map("member_id")
+  type      ConsentType
+  scope     String
+  status    ConsentStatus @default(PENDING)
+  grantedAt DateTime?     @map("granted_at")
+  expiresAt DateTime?     @map("expires_at") // 동의 최대 5년 (TECH §6.3)
+  source    String? // 발급 채널/기관
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@unique([memberId, type, scope])
+  @@map("consents")
+}
+
+model Ledger {
+  id         String       @id @default(cuid())
+  businessId String       @map("business_id")
+  period     String // 년월(YYYY-MM) 또는 분기(YYYY-Qn)
+  type       LedgerType
+  status     LedgerStatus @default(OPEN) @map("status")
+  closedYn   Boolean      @default(false) @map("closed_yn")
+  createdAt  DateTime     @default(now()) @map("created_at")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+
+  business   Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+  vouchers    Voucher[]
+
+  @@unique([businessId, period, type])
+  @@map("ledgers")
+}
+
+model Transaction {
+  id          String              @id @default(cuid())
+  ledgerId    String              @map("ledger_id")
+  bankAcct    String?             @map("bank_acct") // 은행/카드 계좌
+  cardAcct    String?             @map("card_acct")
+  finNo       String?             @map("fin_no") // 금융거래 고유번호 (암호화 대상)
+  amount      Decimal             @db.Decimal(18, 2) // +/- 부호로 수입/지출 구분
+  occurredAt  DateTime            @map("occurred_at")
+  summary     String // 거래·적요 (AES-256-GCM 암호화 대상)
+  provider    TransactionProvider
+  sensitivity DataSensitivity     @default(FINANCIAL_SENSITIVE) // LLM 라우팅
+  createdAt   DateTime            @default(now()) @map("created_at")
+  updatedAt   DateTime            @updatedAt @map("updated_at")
+
+  ledger  Ledger    @relation(fields: [ledgerId], references: [id], onDelete: Cascade)
+  vouchers Voucher[] @relation("VoucherTransactions")
+
+  @@index([ledgerId, occurredAt])
+  @@map("transactions")
+}
+
+model Voucher {
+  id        String        @id @default(cuid())
+  ledgerId  String        @map("ledger_id")
+  date      DateTime
+  status    VoucherStatus @default(PROVISIONAL)
+  source    VoucherSource
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  ledger   Ledger         @relation(fields: [ledgerId], references: [id], onDelete: Cascade)
+  transactions Transaction[] @relation("VoucherTransactions")
+  lines    VoucherLine[]
+  classifications Classification[]
+
+  @@map("vouchers")
+}
+
+model VoucherLine {
+  id          String          @id @default(cuid())
+  voucherId   String          @map("voucher_id")
+  account     String // 계정과목 (AES-256-GCM 암호화 대상)
+  debit       Decimal         @default(0) @db.Decimal(18, 2)
+  credit      Decimal         @default(0) @db.Decimal(18, 2)
+  amount      Decimal         @db.Decimal(18, 2)
+  side        String // 차변/대변 (DEBIT/CREDIT)
+  sensitivity DataSensitivity @default(FINANCIAL_SENSITIVE) // LLM 라우팅
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+
+  voucher Voucher @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+  classifications Classification[]
+
+  @@map("voucher_lines")
+}
+
+model Classification {
+  id            String              @id @default(cuid())
+  voucherId     String              @map("voucher_id")
+  lineId        String              @map("line_id")
+  level         ClassificationLevel
+  model         String // 사용 모델/규칙 (L1 rule / embedding / LLM)
+  confidence    Float
+  justification String? // "왜 이 카테고리인지" 근거 (TECH §4.1)
+  createdAt     DateTime            @default(now()) @map("created_at")
+  updatedAt     DateTime            @updatedAt @map("updated_at")
+
+  voucher Voucher     @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+  line    VoucherLine @relation(fields: [lineId], references: [id], onDelete: Cascade)
+
+  @@index([voucherId, lineId])
+  @@map("classifications")
+}
+
+model TaxPrediction {
+  id         String   @id @default(cuid())
+  businessId String   @map("business_id")
+  taxType    TaxType
+  period     String // 신고 대상 기간 (예: 2026-Q1)
+  lo         Decimal  @db.Decimal(18, 2) // 신뢰 구간 하한
+  hi         Decimal  @db.Decimal(18, 2) // 신뢰 구간 상한
+  base       Decimal  @db.Decimal(18, 2) // 예측 기준 금액
+  model      String // 사용 모델/템플릿 버전
+  dueDate    DateTime @map("due_date") // 신고기한
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([businessId, taxType, period])
+  @@map("tax_predictions")
+}
+
+model Filing {
+  id          String       @id @default(cuid())
+  businessId  String       @map("business_id")
+  taxType     TaxType
+  period      String
+  draftJson   Json?        @map("draft_json") // 신고서 초안
+  pdfUrl      String?      @map("pdf_url")
+  status      FilingStatus @default(DRAFT)
+  submittedAt DateTime?    @map("submitted_at")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([businessId, taxType, period])
+  @@map("filings")
+}
+
+model Notification {
+  id        String              @id @default(cuid())
+  memberId  String              @map("member_id")
+  kind      NotificationKind
+  channel   NotificationChannel
+  title     String
+  body      String?
+  sentAt    DateTime            @default(now()) @map("sent_at")
+  readAt    DateTime?           @map("read_at")
+  createdAt DateTime            @default(now()) @map("created_at")
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@index([memberId, sentAt])
+  @@map("notifications")
 }
