@@ -4,6 +4,7 @@ import {
   ClassificationResult,
 } from './classification.types';
 import { L1RuleClassifier } from './l1-rule.classifier';
+import { L2_CONFIDENCE_THRESHOLD } from './l2-embedding.classifier';
 import type { L2EmbeddingClassifier } from './l2-embedding.classifier';
 import type { L3LlmClassifier } from './l3-llm.classifier';
 
@@ -36,7 +37,7 @@ export class ClassificationPipelineService {
     }
 
     const l2Result = await this.l2.classify(input);
-    if (l2Result.confidence >= L1RuleClassifier.THRESHOLD) {
+    if (l2Result.confidence >= L2_CONFIDENCE_THRESHOLD) {
       return l2Result;
     }
 

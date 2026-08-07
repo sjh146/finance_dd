@@ -5,6 +5,7 @@ import { TransactionAdapterFactory } from './transaction-adapter.factory';
 /**
  * AdaptersModule — external transaction adapters (마이데이터 / 은행계열 API).
  * Exposes the mock adapters and the factory that selects by consent type.
+ * The factory chooses real vs mock MyData adapter via MYDATA_MODE.
  */
 @Module({
   providers: [
