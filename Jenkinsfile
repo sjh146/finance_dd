@@ -9,7 +9,7 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                git branch: 'master', url: 'file:///var/jenkins_home/repos/finance_dd.git'
+                git branch: 'master', url: 'https://github.com/sjh146/finance_dd.git'
             }
         }
         stage('Install') {
