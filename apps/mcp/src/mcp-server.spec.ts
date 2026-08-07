@@ -25,18 +25,18 @@ function mockPrisma() {
       findUnique: jest.fn().mockResolvedValue({ id: 'member-1' }),
     },
     business: {
-      findUnique: jest.fn().mockImplementation(({ where }: { where: { id: string } }) =>
-        where.id === 'biz-1'
+      findUnique: jest.fn().mockImplementation(({ where }: { where: { id: string } }) => {
+        return where.id === 'biz-1'
           ? Promise.resolve({ id: 'biz-1', memberId: 'member-1' })
-          : Promise.resolve(null),
-      ),
+          : Promise.resolve(null);
+      }),
     },
     ledger: {
-      findUnique: jest.fn().mockImplementation(({ where }: { where: { id: string } }) =>
-        where.id === 'ledger-1'
+      findUnique: jest.fn().mockImplementation(({ where }: { where: { id: string } }) => {
+        return where.id === 'ledger-1'
           ? Promise.resolve({ id: 'ledger-1', business: { memberId: 'member-1' } })
-          : Promise.resolve(null),
-      ),
+          : Promise.resolve(null);
+      }),
     },
   };
 }
@@ -46,8 +46,8 @@ describe('McpServerService', () => {
   let mcp: McpServerService;
 
   beforeAll(async () => {
-    // 인증 테스트를 위해 MCP_API_KEY를 설정한다 (시드 회원 키).
-    process.env['MCP_API_KEY'] = '';
+    // 인증 테스트를 위해 MCP_API_KEY를 설정한다 (빈 값이면 서버가 시작을 거부하므로 유효한 테스트 키 사용).
+    process.env['MCP_API_KEY'] = 'test-api-key';
     module = await Test.createTestingModule({
       imports: [McpServerModule],
     })
