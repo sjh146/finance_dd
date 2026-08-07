@@ -27,8 +27,8 @@ WEB_DIR="$ROOT_DIR/apps/web"
 # 스모크 테스트 전용 포트 (기본 3001과 충돌 방지)
 SMOKE_PORT="${SMOKE_PORT:-3199}"
 
-# .env.example에서 DATABASE_URL 추출 (실제 .env는 읽지 않음)
-DATABASE_URL="$(grep -E '^DATABASE_URL=' "$ROOT_DIR/.env.example" | head -1 | cut -d= -f2-)"
+# .env.example에서 DATABASE_URL 추출 (실제 .env는 읽지 않음). 환경변수가 이미 있으면 우선 사용.
+DATABASE_URL="${DATABASE_URL:-$(grep -E '^DATABASE_URL=' "$ROOT_DIR/.env.example" | head -1 | cut -d= -f2-)}"
 if [ -z "$DATABASE_URL" ]; then
   echo "ERROR: .env.example에서 DATABASE_URL을 찾을 수 없습니다."
   exit 1
