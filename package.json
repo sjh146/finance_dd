@@ -17,7 +17,8 @@
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "db:up": "docker compose up -d",
-    "db:down": "docker compose down"
+    "db:down": "docker compose down",
+    "smoke": "bash scripts/smoke-test.sh"
   },
   "engines": {
     "node": ">=22.0.0",
