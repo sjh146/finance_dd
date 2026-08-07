@@ -24,30 +24,33 @@ export class TaxPredictionService {
   ): Promise<VatPrediction> {
     const prediction = new VatRuleTemplate().predict(input, period);
 
-    // Persist via findFirst-then-create (idempotent per business+taxType+period).
-    const existing = await this.prisma.taxPrediction.findFirst({
-      where: { businessId, taxType: 'VAT', period },
+    // Persist atomically via upsert keyed on the (businessId, taxType, period)
+    // unique constraint. This replaces the previous findFirst-then-create/update
+    // sequence, which was vulnerable to a TOCTOU race (CWE-362): concurrent
+    // calls for the same key could both observe "no existing row" and create
+    // duplicate rows. upsert is atomic, so exactly one row exists per key.
+    await this.prisma.taxPrediction.upsert({
+      where: {
+        businessId_taxType_period: { businessId, taxType: 'VAT', period },
+      },
+      update: {
+        lo: prediction.lo,
+        hi: prediction.hi,
+        base: prediction.base,
+        model: VatRuleTemplate.VERSION,
+        dueDate: prediction.dueDate,
+      },
+      create: {
+        businessId,
+        taxType: 'VAT' as const,
+        period,
+        lo: prediction.lo,
+        hi: prediction.hi,
+        base: prediction.base,
+        model: VatRuleTemplate.VERSION,
+        dueDate: prediction.dueDate,
+      },
     });
-
-    const data = {
-      businessId,
-      taxType: 'VAT' as const,
-      period,
-      lo: prediction.lo,
-      hi: prediction.hi,
-      base: prediction.base,
-      model: VatRuleTemplate.VERSION,
-      dueDate: prediction.dueDate,
-    };
-
-    if (existing) {
-      await this.prisma.taxPrediction.update({
-        where: { id: existing.id },
-        data,
-      });
-    } else {
-      await this.prisma.taxPrediction.create({ data });
-    }
 
     return prediction;
   }

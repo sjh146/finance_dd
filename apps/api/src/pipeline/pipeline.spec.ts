@@ -59,6 +59,7 @@ function mockPrisma() {
       findFirst: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      upsert: jest.fn(),
     },
     business: {
       findUnique: jest.fn(),
@@ -334,8 +335,7 @@ describe('PredictProcessor', () => {
       id: 'biz-1',
       memberId: 'member-1',
     });
-    prisma.taxPrediction.findFirst.mockResolvedValue(null);
-    prisma.taxPrediction.create.mockResolvedValue({ id: 'pred-1' });
+    prisma.taxPrediction.upsert.mockResolvedValue({ id: 'pred-1' });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -359,9 +359,16 @@ describe('PredictProcessor', () => {
     const result = await processor.process(job);
 
     expect(result.base).toBe(1000000);
-    expect(prisma.taxPrediction.create).toHaveBeenCalledWith(
+    expect(prisma.taxPrediction.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({
+        where: {
+          businessId_taxType_period: {
+            businessId: 'biz-1',
+            taxType: 'VAT',
+            period: '2026-Q1',
+          },
+        },
+        create: expect.objectContaining({
           businessId: 'biz-1',
           taxType: 'VAT',
           period: '2026-Q1',

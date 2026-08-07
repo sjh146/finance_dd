@@ -277,7 +277,7 @@ model TaxPrediction {
 
   business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
 
-  @@index([businessId, taxType, period])
+  @@unique([businessId, taxType, period])
   @@map("tax_predictions")
 }
 
